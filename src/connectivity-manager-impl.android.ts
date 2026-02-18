@@ -59,6 +59,31 @@ export class ConnectivityManagerImpl
   private connectResolve = null;
   private disconnectResolve = null;
 
+  private safeUnregisterNetworkCallback(
+    callback: ConnectivityManagerService.NetworkCallback
+  ): void {
+    if (!callback) {
+      return;
+    }
+
+    try {
+      this.connectivityManager.unregisterNetworkCallback(callback);
+    } catch (_) {
+      // Ignore callback unregister errors to keep flow resilient.
+    }
+  }
+
+  private static getCapabilities(
+    connectivityManager: ConnectivityManagerService,
+    network: Network
+  ): NetworkCapabilities {
+    if (!network) {
+      return null;
+    }
+
+    return connectivityManager.getNetworkCapabilities(network);
+  }
+
   /**
    * Each Wi-Fi has a SSID, used to identify the network.
    *
@@ -67,6 +92,10 @@ export class ConnectivityManagerImpl
    */
   public getSSID(): string {
     return this.wifiManager.getConnectionInfo().getSSID();
+  }
+
+  public getSSIDAsync(): Promise<string | null> {
+    return Promise.resolve(this.getSSID());
   }
 
   /**
@@ -132,9 +161,13 @@ export class ConnectivityManagerImpl
       throw new Error("Cellular is not enabled.");
     }
 
-    return this.connectivityManager
-      .getNetworkCapabilities(this.connectivityManager.getActiveNetwork())
-      .hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR);
+    const capabilities = ConnectivityManagerImpl.getCapabilities(
+      this.connectivityManager,
+      this.connectivityManager.getActiveNetwork()
+    );
+    return capabilities
+      ? capabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)
+      : false;
   }
 
   /**
@@ -212,9 +245,26 @@ export class ConnectivityManagerImpl
     milliseconds: number
   ): Promise<boolean> {
     return new Promise((resolve) => {
+      const safeTimeoutMs = Math.max(0, Number(milliseconds) || 0);
+      let completed = false;
+      let connectTimeout: any = null;
+      const complete = (result: boolean) => {
+        if (completed) {
+          return;
+        }
+
+        completed = true;
+        if (connectTimeout) {
+          clearTimeout(connectTimeout);
+          connectTimeout = null;
+        }
+        resolve(result);
+      };
+
       // Check if the wifi is enabled since this is a request to a WiFi network
       if (!this.isWifiEnabled()) {
-        throw new Error("Wi-Fi not enabled.");
+        complete(false);
+        return;
       }
 
       try {
@@ -237,7 +287,11 @@ export class ConnectivityManagerImpl
         }
 
         // Set reference to current resolve
-        this.connectResolve = resolve;
+        this.connectResolve = complete;
+        connectTimeout = setTimeout(() => {
+          this.safeUnregisterNetworkCallback(this.forcedNetworkCallback);
+          complete(false);
+        }, safeTimeoutMs);
 
         /*
          * Connect to wifi network
@@ -269,6 +323,7 @@ export class ConnectivityManagerImpl
               onUnavailable: function () {
                 this.super.onUnavailable();
                 that.connectResolve(false);
+                that.safeUnregisterNetworkCallback(that.forcedNetworkCallback);
               },
             }
           ))();
@@ -294,11 +349,6 @@ export class ConnectivityManagerImpl
             conf.allowedKeyManagement.set(WifiConfiguration.KeyMgmt.NONE);
           }
 
-          // the timeout
-          let timeoutInterval = setTimeout(() => {
-            resolve(false);
-          }, milliseconds);
-
           // the network request
           let networkRequest = new NetworkRequest.Builder()
             .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
@@ -316,7 +366,6 @@ export class ConnectivityManagerImpl
                   that.connectivityManager.unregisterNetworkCallback(this);
 
                   that.connectResolve(true);
-                  clearTimeout(timeoutInterval);
                 }
               },
               onUnavailable: function () {
@@ -347,9 +396,10 @@ export class ConnectivityManagerImpl
           this.wifiManager.enableNetwork(netId, true);
         }
       } catch (error) {
-        throw new Error(
-          "Something went wrong wile connecting to the WiFi. + " + error
+        console.log(
+          "Something went wrong while connecting to the Wi-Fi. " + error
         );
+        complete(false);
       }
     });
   }
@@ -370,9 +420,13 @@ export class ConnectivityManagerImpl
     connectivityManager: ConnectivityManagerService,
     network: Network
   ): boolean {
-    return connectivityManager
-      .getNetworkCapabilities(network)
-      .hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET);
+    const capabilities = ConnectivityManagerImpl.getCapabilities(
+      connectivityManager,
+      network
+    );
+    return capabilities
+      ? capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+      : false;
   }
 
   /**
@@ -387,15 +441,27 @@ export class ConnectivityManagerImpl
     return new Promise((resolve) => {
       // Store this call for later use in anonymous class
       let that = this;
+      let networkConnectivity: ConnectivityManagerService.NetworkCallback = null;
+      let completed = false;
+      const complete = (result: boolean) => {
+        if (completed) {
+          return;
+        }
+
+        completed = true;
+        clearTimeout(promiseTimeout);
+        that.safeUnregisterNetworkCallback(networkConnectivity);
+        resolve(result);
+      };
 
       // Set reference to current resolve
-      this.disconnectResolve = resolve;
+      this.disconnectResolve = complete;
 
       let promiseTimeout = setTimeout(() => {
         console.log(
           "Ran into timeout when disconnecting and fetching new connection."
         );
-        resolve(false);
+        complete(false);
       }, timeoutMs);
 
       if (IS_Q_VERSION) {
@@ -404,7 +470,7 @@ export class ConnectivityManagerImpl
          * We need to determine a new network with internet traffic, since after calling bindProcessToNetwork, android will not route app traffic automatically through a new network.
          * We therefore need to find the previous network to route traffic through that network again.
          */
-        let networkConnectivity = new ((ConnectivityManagerService.NetworkCallback as any).extend(
+        networkConnectivity = new ((ConnectivityManagerService.NetworkCallback as any).extend(
           {
             onAvailable: function (network: android.net.Network): void {
               ConnectivityManagerImpl.logConnectivityInfo(
@@ -425,10 +491,6 @@ export class ConnectivityManagerImpl
               ) {
                 that.connectivityManager.bindProcessToNetwork(network);
                 that.disconnectResolve(true);
-                clearTimeout(promiseTimeout);
-
-                // The network we are aiming for is "stable" so we can safely unregister the callback again.
-                that.connectivityManager.unregisterNetworkCallback(this);
               }
             },
             onLost: function (network: android.net.Network): void {
@@ -444,15 +506,12 @@ export class ConnectivityManagerImpl
         );
 
         //Disconnect from the intentionally connected network
-        this.connectivityManager.unregisterNetworkCallback(
-          this.forcedNetworkCallback
-        );
+        this.safeUnregisterNetworkCallback(this.forcedNetworkCallback);
       } else {
         this.wifiManager.disableNetwork(
           this.wifiManager.getConnectionInfo().getNetworkId()
         );
-        clearTimeout(promiseTimeout);
-        resolve(true);
+        complete(true);
       }
     });
   }
@@ -476,10 +535,12 @@ export class ConnectivityManagerImpl
     previousNetworkWiFi: boolean,
     previousNetworkSsid: string
   ): boolean {
-    let isWifi = connectivityManager.getNetworkCapabilities(network)
-      ? connectivityManager
-          .getNetworkCapabilities(network)
-          .hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
+    const networkCapabilities = ConnectivityManagerImpl.getCapabilities(
+      connectivityManager,
+      network
+    );
+    let isWifi = networkCapabilities
+      ? networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI)
       : false;
 
     // both Wi-Fi
@@ -493,9 +554,13 @@ export class ConnectivityManagerImpl
     }
 
     // No Wi-Fi previously
-    let meteredNow = !connectivityManager
-      .getNetworkCapabilities(network)
-      .hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_METERED);
+    if (!networkCapabilities) {
+      return false;
+    }
+
+    let meteredNow = !networkCapabilities.hasCapability(
+      NetworkCapabilities.NET_CAPABILITY_NOT_METERED
+    );
     let hasInternet = ConnectivityManagerImpl.hasInternet(
       connectivityManager,
       network

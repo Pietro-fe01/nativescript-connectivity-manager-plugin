@@ -22,7 +22,7 @@ export class HomeComponent implements OnInit {
 
     ngOnInit(): void {}
 
-    public getInfos() {
+    public async getInfos(): Promise<void> {
         if (isIOS) {
             let locationManager = CLLocationManager.new();
 
@@ -30,7 +30,8 @@ export class HomeComponent implements OnInit {
             locationManager.requestAlwaysAuthorization();
         }
 
-        console.log("Wifi SSID: " + this.connectivityManager.getSSID());
+        const ssid = await this.connectivityManager.getSSIDAsync();
+        console.log("Wifi SSID: " + ssid);
         console.log(
             "NetworkId: " + this.connectivityManager.getWifiNetworkId()
         );
