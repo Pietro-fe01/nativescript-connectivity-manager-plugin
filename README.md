@@ -54,8 +54,9 @@ export class HomeComponent implements OnInit {
     ngOnInit(): void {
     }
 
-    public getInfos() {
-        console.log("Wifi SSID: " + this.connectivityManager.getSSID());
+    public async getInfos(): Promise<void> {
+        const ssid = await this.connectivityManager.getSSIDAsync();
+        console.log("Wifi SSID: " + ssid);
         console.log("NetworkId: " + this.connectivityManager.getWifiNetworkId());
         console.log("Wifi enabled: " + this.connectivityManager.isWifiEnabled());
         console.log("Wifi connected: " + this.connectivityManager.isWifiConnected());
@@ -91,9 +92,16 @@ Requires **Android SDK**: 29
 
 **WARNING: Note that even for scanning WiFi and retrieving the SSID, location permission must be given and GPS must be enabled!**
 
+### iOS / iPadOS SSID Notes
+
+- `getSSID()` is a legacy synchronous best-effort API and may return `null` on newer iOS/iPadOS versions when only CaptiveNetwork APIs are used.
+- Use `getSSIDAsync()` on iOS/iPadOS 14+ (including iOS/iPadOS 26+) because it uses `NEHotspotNetwork.fetchCurrentWithCompletionHandler`.
+- To retrieve the SSID on iOS, apps must include the **Access Wi-Fi Information** entitlement (`com.apple.developer.networking.wifi-info`) and satisfy at least one Apple runtime condition (for example: the app configured the current network via `NEHotspotConfiguration`, or the app has CoreLocation authorization with precise location).
+
 | Method                                                                           | Return              | Description                                          |
 | -------------------------------------------------------------------------------- | ------------------- | ---------------------------------------------------- |
-| getSSID()                                                                        | string              | requires granted location permission and enabled gps |
+| getSSID()                                                                        | string              | legacy synchronous best-effort SSID read             |
+| async getSSIDAsync()                                                             | Promise\<string \| null\> | recommended SSID API, especially on iOS/iPadOS 14+ |
 | getWifiNetworkId()                                                               | number              |
 | isWifiEnabled()                                                                  | boolean             |
 | isWifiConnected()                                                                | boolean             |

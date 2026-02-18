@@ -7,6 +7,8 @@ export declare class ConnectivityManagerImpl extends Common {
 
     getSSID(): string;
 
+    getSSIDAsync(): Promise<string | null>;
+
     getWifiNetworkId(): number;
 
     isWifiConnected(): boolean;
@@ -23,9 +25,9 @@ export declare class ConnectivityManagerImpl extends Common {
 
     hasInternet(): boolean;
 
-    async scanWifiNetworks(): Promise<string[]>;
+    scanWifiNetworks(): Promise<string[]>;
 
-    async connectToWifiNetwork(ssid: string, password: string, milliseconds: number): Promise<boolean>;
+    connectToWifiNetwork(ssid: string, password: string, milliseconds: number): Promise<boolean>;
 
-    async disconnectWifiNetwork(timeoutMs: number): Promise<boolean>
+    disconnectWifiNetwork(timeoutMs: number): Promise<boolean>;
 }

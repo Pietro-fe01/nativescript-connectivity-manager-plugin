@@ -5,6 +5,8 @@
 export interface ConnectivityManagerInterface {
     getSSID(): string;
 
+    getSSIDAsync(): Promise<string | null>;
+
     getWifiNetworkId(): number;
 
     isWifiEnabled(): boolean;
@@ -23,7 +25,7 @@ export interface ConnectivityManagerInterface {
 
     scanWifiNetworks(): Promise<string[]>;
 
-    connectToWifiNetwork(ssid: string, password: string, milliseconds: number): Promise<boolean>
+    connectToWifiNetwork(ssid: string, password: string, milliseconds: number): Promise<boolean>;
 
-    disconnectWifiNetwork(timeoutMs: number):  Promise<boolean>;
+    disconnectWifiNetwork(timeoutMs: number): Promise<boolean>;
 }
