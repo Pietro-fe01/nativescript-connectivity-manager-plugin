@@ -1,6 +1,7 @@
 *.map
 *.ts
 !*.d.ts
+!*.js
 tsconfig.json
 scripts/*
 platforms/android/*

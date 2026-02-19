@@ -1,47 +1,72 @@
-#!/bin/bash
+#!/usr/bin/env bash
+set -euo pipefail
 
-SOURCE_DIR=../src;
-TO_SOURCE_DIR=src;
-PACK_DIR=package;
-ROOT_DIR=..;
-PUBLISH=--publish
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE_DIR="$SCRIPT_DIR/../src"
+TO_SOURCE_DIR="$SCRIPT_DIR/src"
+PACK_DIR="$SCRIPT_DIR/package"
+ROOT_DIR="$SCRIPT_DIR/.."
+LAST_TARBALL_FILE="$SCRIPT_DIR/.last-tarball"
 
-install(){
-    npm i
+install_publish_tools() {
+    (cd "$SCRIPT_DIR" && npm install)
 }
 
 pack() {
+    echo 'Clearing publish/src and publish/package...'
+    "$SCRIPT_DIR/node_modules/.bin/rimraf" "$TO_SOURCE_DIR"
+    "$SCRIPT_DIR/node_modules/.bin/rimraf" "$PACK_DIR"
 
-    echo 'Clearing /src and /package...'
-    node_modules/.bin/rimraf "$TO_SOURCE_DIR"
-    node_modules/.bin/rimraf "$PACK_DIR"
-
-    # copy src
     echo 'Copying src...'
-    node_modules/.bin/ncp "$SOURCE_DIR" "$TO_SOURCE_DIR"
+    "$SCRIPT_DIR/node_modules/.bin/ncp" "$SOURCE_DIR" "$TO_SOURCE_DIR"
 
-    # copy README & LICENSE to src
-    echo 'Copying README and LICENSE to /src...'
-    node_modules/.bin/ncp "$ROOT_DIR"/LICENSE "$TO_SOURCE_DIR"/LICENSE
-    node_modules/.bin/ncp "$ROOT_DIR"/README.md "$TO_SOURCE_DIR"/README.md
+    echo 'Copying README and LICENSE into package source...'
+    "$SCRIPT_DIR/node_modules/.bin/ncp" "$ROOT_DIR/LICENSE" "$TO_SOURCE_DIR/LICENSE"
+    "$SCRIPT_DIR/node_modules/.bin/ncp" "$ROOT_DIR/README.md" "$TO_SOURCE_DIR/README.md"
 
-    # compile package and copy files required by npm
-    echo 'Building /src...'
-    cd "$TO_SOURCE_DIR"
-    node_modules/.bin/tsc
-    cd ..
+    echo 'Installing dependencies and compiling TypeScript...'
+    (
+        cd "$TO_SOURCE_DIR"
+        npm install
+        npm run compile
+    )
 
-    echo 'Creating package...'
-    # create package dir
-    mkdir "$PACK_DIR"
+    for required_file in \
+        "connectivity-manager-impl.android.js" \
+        "connectivity-manager-impl.ios.js" \
+        "connectivity-manager-impl.common.js" \
+        "connectivity-manager-interface.js"
+    do
+        if [ ! -f "$TO_SOURCE_DIR/$required_file" ]; then
+            echo "ERROR: Missing compiled runtime file: $required_file"
+            exit 1
+        fi
+    done
 
-    # create the package
-    cd "$PACK_DIR"
-    npm pack ../"$TO_SOURCE_DIR"
+    echo 'Creating package tarball...'
+    mkdir -p "$PACK_DIR"
+    TARBALL_NAME="$(cd "$PACK_DIR" && npm pack "$TO_SOURCE_DIR" | tail -n 1)"
+    TARBALL_PATH="$PACK_DIR/$TARBALL_NAME"
 
-    # delete source directory used to create the package
-    cd ..
-    node_modules/.bin/rimraf "$TO_SOURCE_DIR"
+    echo "Tarball created: $TARBALL_PATH"
+    echo 'Tarball runtime extract check:'
+    tar -tzf "$TARBALL_PATH" | grep -E 'package/(connectivity-manager-impl\.(android|ios|common)\.js|connectivity-manager-interface\.js|.*\.d\.ts)$' || true
+
+    if ! tar -tzf "$TARBALL_PATH" | grep -q 'package/connectivity-manager-impl.android.js'; then
+        echo 'ERROR: Tarball missing package/connectivity-manager-impl.android.js'
+        exit 1
+    fi
+
+    if ! tar -tzf "$TARBALL_PATH" | grep -q 'package/connectivity-manager-impl.ios.js'; then
+        echo 'ERROR: Tarball missing package/connectivity-manager-impl.ios.js'
+        exit 1
+    fi
+
+    printf '%s\n' "$TARBALL_PATH" > "$LAST_TARBALL_FILE"
+    echo "Saved tarball path to $LAST_TARBALL_FILE"
+
+    "$SCRIPT_DIR/node_modules/.bin/rimraf" "$TO_SOURCE_DIR"
 }
 
-install && pack
+install_publish_tools
+pack

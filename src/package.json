@@ -1,9 +1,16 @@
 {
   "name": "@pietro-fe01/nativescript-connectivity-manager-plugin",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "This plugin provides a connectivity manager of Android and iOS.",
   "main": "connectivity-manager-impl",
   "typings": "index.d.ts",
+  "files": [
+    "*.js",
+    "*.d.ts",
+    "platforms/",
+    "README.md",
+    "LICENSE"
+  ],
   "nativescript": {
     "platforms": {
       "android": "7.0.0",
@@ -16,6 +23,8 @@
   },
   "scripts": {
     "build": "node scripts/build-native.js",
+    "compile": "tsc -p tsconfig.json",
+    "prepack": "npm run compile",
     "demo:reset": "cd ../demo-angular && npx rimraf -- hooks node_modules platforms package-lock.json",
     "demo:ios": "npm i && cd ../demo-angular && tns run ios",
     "demo:android": "npm i && cd ../demo-angular && tns run android --watch",
