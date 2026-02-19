@@ -1,6 +1,6 @@
 {
-  "name": "nativescript-connectivity-manager-plugin",
-  "version": "0.0.8",
+  "name": "@pietro-fe01/nativescript-connectivity-manager-plugin",
+  "version": "0.1.0",
   "description": "This plugin provides a connectivity manager of Android and iOS.",
   "main": "connectivity-manager-impl",
   "typings": "index.d.ts",
@@ -12,7 +12,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/1IoT/nativescript-connectivity-manager-plugin.git"
+    "url": "git+https://github.com/Pietro-fe01/nativescript-connectivity-manager-plugin.git"
   },
   "scripts": {
     "build": "node scripts/build-native.js",
@@ -47,10 +47,10 @@
     "Upd4ting (Antony Rizzitelli)"
   ],
   "bugs": {
-    "url": "https://github.com/1IoT/nativescript-connectivity-manager-plugin/issues"
+    "url": "https://github.com/Pietro-fe01/nativescript-connectivity-manager-plugin/issues"
   },
   "license": "Apache-2.0",
-  "homepage": "https://www.oneiot.de/en/",
+  "homepage": "https://github.com/Pietro-fe01/nativescript-connectivity-manager-plugin#readme",
   "devDependencies": {
     "@nativescript/core": "~7.0.0",
     "@nativescript/types": "~7.0.0",
@@ -61,6 +61,5 @@
     "tslint": "^5.12.1",
     "typescript": "~3.9.0"
   },
-  "dependencies": {},
   "bootstrapper": "nativescript-plugin-seed"
 }
