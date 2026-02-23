@@ -11,13 +11,49 @@ export class ConnectivityManagerImpl
   implements ConnectivityManagerInterface {
   private static readonly POLL_INTERVAL_MS = 200;
   private static readonly SSID_FETCH_TIMEOUT_MS = 1500;
+  private static readonly HOTSPOT_RETRY_DELAY_MS = 400;
+  private static readonly HOTSPOT_ERROR_INTERNAL = 8;
   private static readonly HOTSPOT_ERROR_PENDING = 9;
   private static readonly HOTSPOT_ERROR_JOIN_ONCE_NOT_SUPPORTED = 12;
   private static readonly HOTSPOT_ERROR_ALREADY_ASSOCIATED = 13;
+  private static readonly DIAGNOSTICS_DEFAULT_ENABLED = true;
+  private static readonly DIAGNOSTICS_FLAG_KEY = "__APP_CONNECTIVITY_DIAGNOSTICS__";
 
   private previousSsid: string = undefined;
   private cachedSsid: string | null = null;
   private ssidRefreshInFlight: Promise<string | null> = null;
+
+  private isDiagnosticsEnabled(): boolean {
+    try {
+      const root: any =
+        typeof globalThis !== "undefined"
+          ? (globalThis as any)
+          : typeof global !== "undefined"
+          ? (global as any)
+          : {};
+      const runtimeFlag = root[ConnectivityManagerImpl.DIAGNOSTICS_FLAG_KEY];
+      if (typeof runtimeFlag === "boolean") {
+        return runtimeFlag;
+      }
+    } catch (_) {
+      // Fall back to default value.
+    }
+
+    return ConnectivityManagerImpl.DIAGNOSTICS_DEFAULT_ENABLED;
+  }
+
+  private logConnectivityError(message: string, error?: any): void {
+    if (!this.isDiagnosticsEnabled()) {
+      return;
+    }
+
+    if (error !== undefined) {
+      console.error("[ConnectivityManager iOS] " + message, error);
+      return;
+    }
+
+    console.error("[ConnectivityManager iOS] " + message);
+  }
 
   private getNetworkInfo(): NSDictionary<any, any> {
     try {
@@ -41,8 +77,9 @@ export class ConnectivityManagerImpl
       }
 
       return null;
-    } catch (_) {
+    } catch (error) {
       // CaptiveNetwork can fail on simulator and newer SDK/runtime combinations.
+      this.logConnectivityError("getNetworkInfo failed.", error);
       return null;
     }
   }
@@ -77,7 +114,8 @@ export class ConnectivityManagerImpl
   private getSsidFromCaptiveNetworkSafe(): string | null {
     try {
       return this.getSsidFromCaptiveNetwork();
-    } catch (_) {
+    } catch (error) {
+      this.logConnectivityError("getSsidFromCaptiveNetworkSafe failed.", error);
       return null;
     }
   }
@@ -99,8 +137,14 @@ export class ConnectivityManagerImpl
     const code = this.getHotspotErrorCode(err);
     return (
       code === ConnectivityManagerImpl.HOTSPOT_ERROR_ALREADY_ASSOCIATED ||
-      code === ConnectivityManagerImpl.HOTSPOT_ERROR_PENDING
+      code === ConnectivityManagerImpl.HOTSPOT_ERROR_PENDING ||
+      code === ConnectivityManagerImpl.HOTSPOT_ERROR_INTERNAL
     );
+  }
+
+  private canRetryAfterConfigurationReset(err: NSError): boolean {
+    const code = this.getHotspotErrorCode(err);
+    return code === ConnectivityManagerImpl.HOTSPOT_ERROR_INTERNAL;
   }
 
   private canRetryWithoutJoinOnce(err: NSError): boolean {
@@ -115,7 +159,7 @@ export class ConnectivityManagerImpl
       return;
     }
 
-    console.log(
+    this.logConnectivityError(
       "NEHotspotConfiguration error. domain=" +
         err.domain +
         ", code=" +
@@ -155,6 +199,18 @@ export class ConnectivityManagerImpl
     ssid: string,
     password: string
   ): Promise<NSError | null> {
+    try {
+      NEHotspotConfigurationManager.sharedManager.removeConfigurationForSSID(ssid);
+    } catch (error) {
+      // Best-effort cleanup before a fresh join.
+      this.logConnectivityError(
+        "removeConfigurationForSSID failed before initial hotspot apply.",
+        error
+      );
+    }
+
+    await this.delay(ConnectivityManagerImpl.HOTSPOT_RETRY_DELAY_MS);
+
     const initialConfiguration = this.createHotspotConfiguration(
       ssid,
       password,
@@ -168,16 +224,65 @@ export class ConnectivityManagerImpl
       return initialError;
     }
 
-    if (!this.canRetryWithoutJoinOnce(initialError)) {
-      return initialError;
+    if (this.canRetryWithoutJoinOnce(initialError)) {
+      const fallbackConfiguration = this.createHotspotConfiguration(
+        ssid,
+        password,
+        false
+      );
+      const fallbackError = await this.applyHotspotConfiguration(
+        fallbackConfiguration
+      );
+
+      if (
+        fallbackError &&
+        this.canRetryAfterConfigurationReset(fallbackError)
+      ) {
+        return this.applyHotspotConfigurationAfterReset(ssid, password);
+      }
+
+      return fallbackError;
     }
 
-    const fallbackConfiguration = this.createHotspotConfiguration(
+    if (this.canRetryAfterConfigurationReset(initialError)) {
+      return this.applyHotspotConfigurationAfterReset(ssid, password);
+    }
+
+    return initialError;
+  }
+
+  private applyPersistentHotspotConfiguration(
+    ssid: string,
+    password: string
+  ): Promise<NSError | null> {
+    const persistentConfiguration = this.createHotspotConfiguration(
       ssid,
       password,
       false
     );
-    return this.applyHotspotConfiguration(fallbackConfiguration);
+    return this.applyHotspotConfiguration(persistentConfiguration);
+  }
+
+  private delay(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, Math.max(0, ms || 0)));
+  }
+
+  private async applyHotspotConfigurationAfterReset(
+    ssid: string,
+    password: string
+  ): Promise<NSError | null> {
+    try {
+      NEHotspotConfigurationManager.sharedManager.removeConfigurationForSSID(ssid);
+    } catch (error) {
+      // Best-effort cleanup.
+      this.logConnectivityError(
+        "removeConfigurationForSSID failed before reset retry apply.",
+        error
+      );
+    }
+
+    await this.delay(ConnectivityManagerImpl.HOTSPOT_RETRY_DELAY_MS);
+    return this.applyPersistentHotspotConfiguration(ssid, password);
   }
 
   private fetchCurrentSsid(): Promise<string | null> {
@@ -220,8 +325,9 @@ export class ConnectivityManagerImpl
           });
           return;
         }
-      } catch (_) {
+      } catch (error) {
         // Keep this method best-effort and never throw.
+        this.logConnectivityError("fetchCurrentSsid failed while reading hotspot network.", error);
       }
 
       finishWithFallback();
@@ -238,6 +344,7 @@ export class ConnectivityManagerImpl
       const safeIntervalMs = Math.max(50, Number(intervalMs) || 200);
       const startedAt = Date.now();
       let done = false;
+      let loopErrorLogged = false;
 
       const finish = (result: boolean) => {
         if (done) {
@@ -267,7 +374,11 @@ export class ConnectivityManagerImpl
 
             setTimeout(loop, safeIntervalMs);
           })
-          .catch(() => {
+          .catch((error) => {
+            if (!loopErrorLogged) {
+              loopErrorLogged = true;
+              this.logConnectivityError("waitUntil checkFn rejected.", error);
+            }
             if (Date.now() - startedAt >= safeTimeoutMs) {
               finish(false);
               return;
@@ -312,6 +423,12 @@ export class ConnectivityManagerImpl
   }
 
   public getSSIDAsync(): Promise<string | null> {
+    const fastPathSsid = this.getSsidFromCaptiveNetworkSafe();
+    if (fastPathSsid) {
+      this.cachedSsid = fastPathSsid;
+      return Promise.resolve(fastPathSsid);
+    }
+
     return this.fetchCurrentSsid().then((ssid) => {
       this.cachedSsid = ssid;
       return ssid;
@@ -375,30 +492,152 @@ export class ConnectivityManagerImpl
         return;
       }
 
-      this.applyHotspotConfigurationWithFallback(expectedSsid, password)
-        .then(async (err) => {
-          if (err && !this.isRecoverableHotspotConfigurationError(err)) {
-            this.logHotspotConfigurationError(err);
-            resolve(false);
+      const safeTimeoutMs = Math.max(0, Number(milliseconds) || 0);
+      const startedAt = Date.now();
+      const getRemainingTimeout = () =>
+        Math.max(0, safeTimeoutMs - (Date.now() - startedAt));
+      const getTimeoutSlice = (preferredMs: number) =>
+        Math.max(
+          0,
+          Math.min(Math.max(0, Number(preferredMs) || 0), getRemainingTimeout())
+        );
+      const observedSsids = new Set<string>();
+
+      this.getSSIDAsync()
+        .then((initialSsidRaw) => this.normalizeSsid(initialSsidRaw))
+        .then(async (initialSsid) => {
+          if (initialSsid) {
+            observedSsids.add(initialSsid);
+          }
+
+          if (initialSsid === expectedSsid) {
+            this.previousSsid = expectedSsid;
+            this.cachedSsid = expectedSsid;
+            resolve(true);
             return;
           }
 
-          const connected = await this.waitUntil(async () => {
-            const currentSsid = await this.getSSIDAsync();
-            return currentSsid === expectedSsid;
-          }, milliseconds, ConnectivityManagerImpl.POLL_INTERVAL_MS);
+          return this.applyHotspotConfigurationWithFallback(expectedSsid, password)
+            .then(async (err) => {
+              let initialError = err;
+              if (initialError && this.canRetryAfterConfigurationReset(initialError)) {
+                initialError = await this.applyHotspotConfigurationAfterReset(
+                  expectedSsid,
+                  password
+                );
+              }
 
-          if (connected) {
-            this.previousSsid = expectedSsid;
-          } else {
-            console.log(
-              "Timed out while waiting to connect to SSID '" + expectedSsid + "'."
-            );
-          }
+              if (
+                initialError &&
+                !this.isRecoverableHotspotConfigurationError(initialError)
+              ) {
+                this.logHotspotConfigurationError(initialError);
+                resolve(false);
+                return;
+              }
 
-          resolve(connected);
+              if (initialError) {
+                this.logHotspotConfigurationError(initialError);
+              }
+
+              let connected = await this.waitUntil(async () => {
+                const currentSsid = this.normalizeSsid(await this.getSSIDAsync());
+                if (currentSsid) {
+                  observedSsids.add(currentSsid);
+                }
+                return currentSsid === expectedSsid;
+              }, getTimeoutSlice(15000), ConnectivityManagerImpl.POLL_INTERVAL_MS);
+
+              if (!connected && getRemainingTimeout() > 0) {
+                let persistentError = await this.applyPersistentHotspotConfiguration(
+                  expectedSsid,
+                  password
+                );
+
+                if (
+                  persistentError &&
+                  this.canRetryAfterConfigurationReset(persistentError)
+                ) {
+                  persistentError = await this.applyHotspotConfigurationAfterReset(
+                    expectedSsid,
+                    password
+                  );
+                }
+
+                if (
+                  persistentError &&
+                  !this.isRecoverableHotspotConfigurationError(persistentError)
+                ) {
+                  this.logHotspotConfigurationError(persistentError);
+                  resolve(false);
+                  return;
+                }
+
+                if (persistentError) {
+                  this.logHotspotConfigurationError(persistentError);
+                }
+
+                connected = await this.waitUntil(async () => {
+                  const currentSsid = this.normalizeSsid(await this.getSSIDAsync());
+                  if (currentSsid) {
+                    observedSsids.add(currentSsid);
+                  }
+                  return currentSsid === expectedSsid;
+                }, getTimeoutSlice(15000), ConnectivityManagerImpl.POLL_INTERVAL_MS);
+              }
+
+              if (!connected && getRemainingTimeout() > 0) {
+                const resetRetryError = await this.applyHotspotConfigurationAfterReset(
+                  expectedSsid,
+                  password
+                );
+                if (
+                  resetRetryError &&
+                  !this.isRecoverableHotspotConfigurationError(resetRetryError)
+                ) {
+                  this.logHotspotConfigurationError(resetRetryError);
+                  resolve(false);
+                  return;
+                }
+
+                if (resetRetryError) {
+                  this.logHotspotConfigurationError(resetRetryError);
+                }
+
+                connected = await this.waitUntil(async () => {
+                  const currentSsid = this.normalizeSsid(await this.getSSIDAsync());
+                  if (currentSsid) {
+                    observedSsids.add(currentSsid);
+                  }
+                  return currentSsid === expectedSsid;
+                }, getRemainingTimeout(), ConnectivityManagerImpl.POLL_INTERVAL_MS);
+              }
+
+              if (connected) {
+                this.previousSsid = expectedSsid;
+                this.cachedSsid = expectedSsid;
+              } else {
+                const observed = Array.from(observedSsids.values());
+                const observedLog = observed.length
+                  ? observed.join(", ")
+                  : "(none)";
+                this.logConnectivityError(
+                  "Timed out while waiting to connect to SSID '" +
+                    expectedSsid +
+                    "'. Observed SSIDs: " +
+                    observedLog
+                );
+              }
+
+              resolve(connected);
+            })
+            .catch((error) => {
+              this.logConnectivityError("connectToWifiNetwork failed with unhandled error.", error);
+              resolve(false);
+            });
         })
-        .catch(() => {
+        .catch((error) => {
+          this.logConnectivityError("connectToWifiNetwork failed before hotspot apply.", error);
           resolve(false);
         });
     });
@@ -424,7 +663,7 @@ export class ConnectivityManagerImpl
           this.previousSsid = undefined;
           this.cachedSsid = null;
         } else if (!disconnected) {
-          console.log(
+          this.logConnectivityError(
             "Timed out while waiting to disconnect from SSID '" +
               ssidToDisconnect +
               "'."
