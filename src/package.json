@@ -1,6 +1,6 @@
 {
   "name": "@pietro-fe01/nativescript-connectivity-manager-plugin",
-  "version": "0.1.1",
+  "version": "1.0.0",
   "description": "This plugin provides a connectivity manager of Android and iOS.",
   "main": "connectivity-manager-impl",
   "typings": "index.d.ts",
